@@ -7,6 +7,7 @@ from torch import tensor, nn
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
+
 class MinEuclideanDistBlock(nn.Module):
     """
     Calculates the euclidean distances of a bunch of shapelets to a data set and performs global min-pooling.
@@ -21,6 +22,7 @@ class MinEuclideanDistBlock(nn.Module):
     cuda : bool
         if true loads everything to the GPU
     """
+
     def __init__(self, shapelets_size, num_shapelets, in_channels=1, to_cuda=True):
         super(MinEuclideanDistBlock, self).__init__()
         self.to_cuda = to_cuda
@@ -29,14 +31,22 @@ class MinEuclideanDistBlock(nn.Module):
         self.in_channels = in_channels
 
         # if not registered as parameter, the optimizer will not be able to see the parameters
+        # torch.randn用来生成正态随机分布的张量，结果是一个tensor
         shapelets = torch.randn(self.in_channels, self.num_shapelets, self.shapelets_size, requires_grad=True)
+        print(f"shape of shapelets {shapelets.shape} {self.in_channels} {self.num_shapelets} {self.shapelets_size}")
         if self.to_cuda:
             shapelets = shapelets.cuda()
+        # nn.parameter 将tensor类型的参数变为一组可以训练的参数
+        # contiguous makes a deep copy of the parameters
         self.shapelets = nn.Parameter(shapelets).contiguous()
         # otherwise gradients will not be backpropagated
         self.shapelets.retain_grad()
 
     def forward(self, x):
+
+        # 在这里做了时间序列x和本model中的shapelets的距离
+        # todo：搞清楚这里怎么处理多维时间序列
+
         """
         1) Unfold the data set 2) calculate euclidean distance 3) sum over channels and 4) perform global min-pooling
         @param x: the time series data
@@ -45,14 +55,20 @@ class MinEuclideanDistBlock(nn.Module):
         @rtype: tensor(num_samples, num_shapelets)
         """
         # unfold time series to emulate sliding window
+        # dim, size, step
         x = x.unfold(2, self.shapelets_size, 1).contiguous()
+
         # calculate euclidean distance
         x = torch.cdist(x, self.shapelets, p=2)
 
         # add up the distances of the channels in case of
         # multivariate time series
         # Corresponds to the approach 1 and 3 here: https://stats.stackexchange.com/questions/184977/multivariate-time-series-euclidean-distance
+
+        # todo：这里要加入selector了？
         x = torch.sum(x, dim=1, keepdim=True).transpose(2, 3)
+
+        # 这里取距离的min
         # hard min compared to soft-min from the paper
         x, _ = torch.min(x, 3)
         return x
@@ -123,6 +139,7 @@ class MaxCosineSimilarityBlock(nn.Module):
     cuda : bool
         if true loads everything to the GPU
     """
+
     def __init__(self, shapelets_size, num_shapelets, in_channels=1, to_cuda=True):
         super(MaxCosineSimilarityBlock, self).__init__()
         self.to_cuda = to_cuda
@@ -206,8 +223,9 @@ class MaxCosineSimilarityBlock(nn.Module):
         @rtype: None
         """
         if not list(weights.shape) == list(self.shapelets[:, j].shape):
-            raise ValueError(f"Shapes do not match. Currently set weights have shape {list(self.shapelets[:, j].shape)} "
-                             f"compared to {list(weights[j].shape)}")
+            raise ValueError(
+                f"Shapes do not match. Currently set weights have shape {list(self.shapelets[:, j].shape)} "
+                f"compared to {list(weights[j].shape)}")
         if not isinstance(weights, torch.Tensor):
             weights = torch.Tensor(weights, dtype=torch.float)
         if self.to_cuda:
@@ -231,6 +249,7 @@ class MaxCrossCorrelationBlock(nn.Module):
     cuda : bool
         if true loads everything to the GPU
     """
+
     # TODO Why is this multiple time slower than the other two implementations?
     def __init__(self, shapelets_size, num_shapelets, in_channels=1, to_cuda=True):
         super(MaxCrossCorrelationBlock, self).__init__()
@@ -315,6 +334,7 @@ class ShapeletsDistBlocks(nn.Module):
     to_cuda : bool
         if true loads everything to the GPU
     """
+
     def __init__(self, shapelets_size_and_len, in_channels=1, dist_measure='euclidean', to_cuda=True):
         super(ShapeletsDistBlocks, self).__init__()
         self.to_cuda = to_cuda
@@ -322,10 +342,13 @@ class ShapeletsDistBlocks(nn.Module):
         self.in_channels = in_channels
         self.dist_measure = dist_measure
         if dist_measure == 'euclidean':
+            # 生成一系列的 module
+            # 关键看怎么更新参数的
             self.blocks = nn.ModuleList(
                 [MinEuclideanDistBlock(shapelets_size=shapelets_size, num_shapelets=num_shapelets,
                                        in_channels=in_channels, to_cuda=self.to_cuda)
                  for shapelets_size, num_shapelets in self.shapelets_size_and_len.items()])
+            print(f"number of blocks {len(self.blocks)}")
         elif dist_measure == 'cross-correlation':
             self.blocks = nn.ModuleList(
                 [MaxCrossCorrelationBlock(shapelets_size=shapelets_size, num_shapelets=num_shapelets,
@@ -438,6 +461,7 @@ class ShapeletsDistBlocks(nn.Module):
             start += block.num_shapelets
         return shapelets
 
+
 class ShapeletsDistanceLoss(nn.Module):
     """
     Calculates the cosine similarity of a bunch of shapelets to a data set and performs global max-pooling.
@@ -452,6 +476,7 @@ class ShapeletsDistanceLoss(nn.Module):
     cuda : bool
         if true loads everything to the GPU
     """
+
     def __init__(self, dist_measure='euclidean', k=6):
         super(ShapeletsDistanceLoss, self).__init__()
         if not dist_measure == 'euclidean' and not dist_measure == 'cosine':
@@ -469,6 +494,7 @@ class ShapeletsDistanceLoss(nn.Module):
         @return: the computed loss
         @rtype: float
         """
+        # todo：这里要修改成我们定义的距离损失，但是本身距离的计算在哪里？
         y_top, y_topi = torch.topk(x.clamp(1e-8), self.k, largest=False if self.dist_measure == 'euclidean' else True,
                                    sorted=False, dim=0)
         # avoid compiler warning
@@ -479,11 +505,13 @@ class ShapeletsDistanceLoss(nn.Module):
             y_loss = torch.mean(1 - y_top)
         return y_loss
 
+
 class ShapeletsSimilarityLoss(nn.Module):
     """
     Calculates the cosine similarity of each block of shapelets and averages over the blocks.
     ----------
     """
+
     def __init__(self):
         super(ShapeletsSimilarityLoss, self).__init__()
 
@@ -536,6 +564,7 @@ class ShapeletsSimilarityLoss(nn.Module):
 
 
 class LearningShapeletsModel(nn.Module):
+    # 继承了module类
     """
     Implements Learning Shapelets. Just puts together the ShapeletsDistBlocks with a
     linear layer on top.
@@ -551,6 +580,7 @@ class LearningShapeletsModel(nn.Module):
     to_cuda : bool
         if true loads everything to the GPU
     """
+
     def __init__(self, shapelets_size_and_len, in_channels=1, num_classes=2, dist_measure='euclidean',
                  to_cuda=True):
         super(LearningShapeletsModel, self).__init__()
@@ -665,9 +695,11 @@ class LearningShapelets:
     to_cuda : bool
         if true loads everything to the GPU
     """
+
     def __init__(self, shapelets_size_and_len, loss_func, in_channels=1, num_classes=2,
                  dist_measure='euclidean', verbose=0, to_cuda=True, k=0, l1=0.0, l2=0.0):
 
+        # 核心就是包括一系列 blocks，对应产生shapelet的modules
         self.model = LearningShapeletsModel(shapelets_size_and_len=shapelets_size_and_len,
                                             in_channels=in_channels, num_classes=num_classes, dist_measure=dist_measure,
                                             to_cuda=to_cuda)
@@ -741,7 +773,10 @@ class LearningShapelets:
         @return: the loss for the batch
         @rtype: float
         """
+
+        # 这里直接调用 model(x) 是做前向传播 forward
         y_hat = self.model(x)
+        # 这里使用的是demo中定义的分类交叉熵损失函数
         loss = self.loss_func(y_hat, y)
         loss.backward()
         self.optimizer.step()
@@ -790,7 +825,7 @@ class LearningShapelets:
         self.optimizer.zero_grad()
 
         return (loss_ce.item(), loss_dist.item(), loss_sim.item()) if self.l2 > 0.0 else (
-        loss_ce.item(), loss_dist.item())
+            loss_ce.item(), loss_dist.item())
 
     def fit(self, X, Y, epochs=1, batch_size=256, shuffle=False, drop_last=False):
         """
@@ -859,7 +894,7 @@ class LearningShapelets:
                 else:
                     progress_bar.set_description(f"Loss CE: {current_loss_ce}, Loss dist: {current_loss_dist}")
         return losses_ce if not self.use_regularizer else (losses_ce, losses_dist, losses_sim) if self.l2 > 0.0 else (
-        losses_ce, losses_dist)
+            losses_ce, losses_dist)
 
     def transform(self, X):
         """
